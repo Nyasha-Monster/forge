@@ -16,11 +16,11 @@ import forge.deck.Deck;
 import forge.deck.DeckSection;
 import forge.deck.DeckgenUtil;
 import forge.deck.io.DeckSerializer;
+import forge.item.PaperCardPredicates;
 import forge.game.GameFormat;
 import forge.game.GameType;
 import forge.item.BoosterPack;
 import forge.item.PaperCard;
-import forge.item.PaperCardPredicates;
 import forge.item.SealedTemplate;
 import forge.item.generation.UnOpenedProduct;
 import forge.model.FModel;
@@ -297,8 +297,16 @@ public class CardUtil {
                     superType.add(CardType.Supertype.getEnum(string));
             }
             if (type.cardTypes != null) {
-                for (String string : type.cardTypes)
-                    this.type.add(CardType.CoreType.getEnum(string));
+                for (String string : type.cardTypes) {
+                    CardType.CoreType core = (string == null) ? null : CardType.CoreType.getEnum(string);
+                    if (core != null) {
+                        this.type.add(core);
+                    } else if (string != null && !string.isEmpty()) {
+                        // Not a core type (e.g. Vehicle requested via cardTypes):
+                        // route it into subType matching so it can hit.
+                        subType.add(string);
+                    }
+                }
             }
             if (type.colorType != null && !type.colorType.isEmpty()) {
                 this.colorType = ColorType.valueOf(type.colorType);
@@ -333,31 +341,134 @@ public class CardUtil {
 
         final List<PaperCard> result = new ArrayList<>();
         List<PaperCard> pool = getPredicateResult(cards, data);
-        if (!pool.isEmpty()) {
-            for (int i = 0; i < count; i++) {
-                PaperCard candidate = pool.get(r.nextInt(pool.size()));
-                if (candidate != null) {
-                    if (allCardVariants) {
-                        // Get a random variant, preserving edition when specified
-                        PaperCard finalCandidate = CardUtil.getCardByNameAndEdition(candidate.getCardName(), candidate.getEdition());
-                        result.add(finalCandidate);
-                    } else {
-                        result.add(candidate);
-                    }
+        if (data != null && (data.shouldIgnoreEditionRestrictions() || pool.size() < RewardData.MIN_CARDS_FOR_NORMAL_POOL)) {
+            Iterable<PaperCard> relaxed = getRelaxedPool();
+            if (relaxed != null && relaxed != cards) {
+                List<PaperCard> relaxedMatches = getPredicateResult(relaxed, data);
+                if (relaxedMatches.size() > pool.size()) {
+                    System.out.println("[DECK DEBUG] CardUtil.generateCards: RELAXED (" + pool.size() + " -> "
+                            + relaxedMatches.size() + " matches) " + (data != null ? data.debugFilters() : "data=null"));
+                    pool = relaxedMatches;
+                } else {
+                    System.out.println("[DECK DEBUG] CardUtil.generateCards: KEEP NORMAL (" + pool.size()
+                            + " vs relaxed " + relaxedMatches.size() + ") "
+                            + (data != null ? data.debugFilters() : "data=null"));
                 }
             }
         }
+        if (!pool.isEmpty()) {
+            List<PaperCard> shuffled = new ArrayList<>(pool);
+            Collections.shuffle(shuffled, r);
+            Set<String> usedNames = new HashSet<>();
+            Set<String> usedPrintings = new HashSet<>();
+            Set<String> distinctNames = new HashSet<>();
+            for (PaperCard c : pool) {
+                if (c != null)
+                    distinctNames.add(c.getName());
+            }
+            int distinctTotal = distinctNames.size();
+            for (PaperCard candidate : shuffled) {
+                if (result.size() >= count)
+                    break;
+                if (candidate == null || usedPrintings.contains(printingKey(candidate))
+                        || usedNames.contains(candidate.getName()))
+                    continue;
+                result.add(resolveVariant(candidate, allCardVariants));
+                usedNames.add(candidate.getName());
+                usedPrintings.add(printingKey(candidate));
+            }
+            int guard = Math.max(200, count * 60);
+            while (result.size() < count && guard-- > 0) {
+                PaperCard candidate = pool.get(r.nextInt(pool.size()));
+                if (candidate == null)
+                    continue;
+                // Strict no-repeat while distinct names remain unused:
+                // Saga/Vehicle shops deal distinct printings, never copies.
+                // Only when usedNames covers the whole distinct pool may we repeat.
+                if ((usedPrintings.contains(printingKey(candidate)) || usedNames.contains(candidate.getName()))
+                        && usedNames.size() < distinctTotal)
+                    continue;
+                PaperCard resolved = resolveVariant(candidate, allCardVariants);
+                if (resolved != null) {
+                    result.add(resolved);
+                    usedNames.add(candidate.getName());
+                    usedPrintings.add(printingKey(candidate));
+                }
+            }
+        }
+        if (result.size() < count) {
+            System.out.println("[DECK DEBUG] CardUtil.generateCards: dealt " + result.size() + "/" + count
+                    + " from pool " + pool.size() + " (pool exhausted or filters too narrow)");
+        }
         return result;
+    }
+
+    /** Identity of a specific printing, used to avoid dealing the same card twice. */
+    private static String printingKey(PaperCard card) {
+        if (card == null)
+            return "";
+        return card.getName() + "|" + card.getEdition();
+    }
+
+    private static PaperCard resolveVariant(PaperCard candidate, boolean allCardVariants) {
+        if (candidate == null || !allCardVariants)
+            return candidate;
+        ConfigData configData = Config.instance().getConfigData();
+        boolean editionAllowed = true;
+        if (configData.allowedEditions != null && configData.allowedEditions.length > 0)
+            editionAllowed = Arrays.asList(configData.allowedEditions).contains(candidate.getEdition());
+        else if (configData.restrictedEditions != null && configData.restrictedEditions.length > 0)
+            editionAllowed = !Arrays.asList(configData.restrictedEditions).contains(candidate.getEdition());
+        // Only "refresh" the printing when the edition is legal — otherwise
+        // getCardByNameAndEdition() redirects to a random printing which may
+        // resolve to Wastes and destroy the reward/deck.
+        if (!editionAllowed)
+            return candidate;
+        // Never swap a valid pool card for the "Wastes" placeholder: the relaxed pool
+        // deliberately ignores allowedEditions, so a strict re-lookup by name can fail
+        // and would otherwise destroy the whole reward/deck.
+        PaperCard resolved = CardUtil.getCardByNameAndEditionOrNull(candidate.getCardName(), candidate.getEdition());
+        return resolved != null ? resolved : candidate;
     }
     private static AdventureReadPriceList.PriceData priceData;
 
-    /**
-     * Clear the cached price data. Call this when switching adventures/planes
-     * so prices are reloaded from the new adventure's cardprices.txt.
-     */
+    private static Iterable<PaperCard> relaxedPoolCache = null;
+
     public static void clearPriceCache() {
         priceData = null;
         AdventureReadPriceList.clearPriceDataInstance();
+    }
+
+    /**
+     * Relaxed pool built directly from the card DB: no allowedEditions filter,
+     * but restrictedEditions / restrictedCards are still respected.
+     */
+    public static Iterable<PaperCard> getRelaxedPool() {
+        if (relaxedPoolCache != null)
+            return relaxedPoolCache;
+        try {
+            ConfigData configData = Config.instance().getConfigData();
+            List<Predicate<PaperCard>> filters = new ArrayList<>();
+            filters.add(card -> card != null);
+            if (configData.restrictedEditions != null && configData.restrictedEditions.length > 0)
+                filters.add(PaperCardPredicates.isObtainableNotRestricted(configData.restrictedEditions));
+            else
+                filters.add(PaperCardPredicates.isObtainableAnyEdition());
+            Set<String> restrictedCards = configData.restrictedCards == null
+                    ? Collections.emptySet()
+                    : new HashSet<>(Arrays.asList(configData.restrictedCards));
+            filters.add(pc -> pc != null && !restrictedCards.contains(pc.getName()));
+            relaxedPoolCache = FModel.getMagicDb().getCommonCards().getUniqueCards().stream()
+                    .filter(IterableUtil.and(filters))
+                    .collect(Collectors.toList());
+        } catch (Exception e) {
+            relaxedPoolCache = null;
+        }
+        return relaxedPoolCache;
+    }
+
+    public static void invalidateRelaxedPool() {
+        relaxedPoolCache = null;
     }
 
     private static AdventureReadPriceList.PriceData getPriceData() {
@@ -851,7 +962,12 @@ public class CardUtil {
         return FModel.getMagicDb().getCommonCards().getCard(replacementCard);
     }
 
-    public static PaperCard getCardByName(String cardName) {
+    /**
+     * Every printing of {@code cardName} that the current configuration allows
+     * (allowedEditions / restrictedEditions / alchemy variants).
+     * An empty list means "not resolvable in this plane".
+     */
+    private static List<PaperCard> findPrintingsAllowedByConfig(String cardName) {
         List<PaperCard> validCards;
         ConfigData configData = Config.instance().getConfigData();
         if (Config.instance().getSettingData().useAllCardVariants) {
@@ -868,7 +984,10 @@ public class CardUtil {
             }
             validCards = FModel.getMagicDb().getCommonCards().getAllCardsNoAlt(cardName, combined_predicate);
         } else {
-            validCards = List.of(FModel.getMagicDb().getCommonCards().getUniqueByNameNoAlt(cardName));
+            // getUniqueByNameNoAlt() returns null for unknown names: keep the list empty
+            // instead of letting List.of(null) blow up with an NPE.
+            PaperCard unique = FModel.getMagicDb().getCommonCards().getUniqueByNameNoAlt(cardName);
+            validCards = (unique == null) ? new ArrayList<>() : List.of(unique);
             // Filter to allowed editions to prevent showing printings from wrong sets.
             if (configData.allowedEditions != null && configData.allowedEditions.length > 0) {
                 Set<String> allowed = new HashSet<>(Arrays.asList(configData.allowedEditions));
@@ -897,38 +1016,109 @@ public class CardUtil {
                 validCards = new ArrayList<>(filteredCardList);
             }
         }
+        if (validCards == null)
+            validCards = new ArrayList<>();
+        return validCards;
+    }
+
+    private static PaperCard pickRandom(List<PaperCard> validCards) {
+        return validCards.get(Current.world().getRandom().nextInt(validCards.size()));
+    }
+
+    public static PaperCard getCardByName(String cardName) {
+        List<PaperCard> validCards = findPrintingsAllowedByConfig(cardName);
         if (validCards.isEmpty()) {
             return getReplacement(cardName, "Wastes");
         }
 
-        return validCards.get(Current.world().getRandom().nextInt(validCards.size()));
+        return pickRandom(validCards);
+    }
+
+    /**
+     * Same lookup as {@link #getCardByName(String)}, but never swaps the card for the
+     * "Wastes" replacement: returns null when no printing is allowed by the current
+     * configuration.
+     *
+     * <p>
+     * Cards that were dealt from a pool have to be resolvable: the relaxed pool
+     * deliberately ignores allowedEditions, so the strict re-lookup below can come up
+     * empty and turning such a card into Wastes destroys the whole shop stock.
+     * </p>
+     */
+    public static PaperCard getCardByNameOrNull(String cardName) {
+        List<PaperCard> validCards = findPrintingsAllowedByConfig(cardName);
+        if (validCards.isEmpty()) {
+            List<PaperCard> inDb = FModel.getMagicDb().getCommonCards().getAllCardsNoAlt(cardName);
+            ConfigData configData = Config.instance().getConfigData();
+            System.out.println("[DECK DEBUG] getCardByNameOrNull: '" + cardName
+                    + "' has no printing allowed by the config (allowedEditions="
+                    + Arrays.toString(configData.allowedEditions) + ", restrictedEditions="
+                    + Arrays.toString(configData.restrictedEditions) + "), printings in DB="
+                    + (inDb == null ? 0 : inDb.size())
+                    + ((inDb == null || inDb.isEmpty())
+                            ? " (name unknown to the DB)"
+                            : " (editions: " + editionsOf(inDb) + ")"));
+            return null;
+        }
+        return pickRandom(validCards);
+    }
+
+    private static String editionsOf(List<PaperCard> cards) {
+        StringBuilder sb = new StringBuilder();
+        for (PaperCard card : cards) {
+            if (card == null)
+                continue;
+            if (sb.length() > 0)
+                sb.append(", ");
+            sb.append(card.getEdition());
+        }
+        return sb.toString();
     }
 
     public static PaperCard getCardByNameAndEdition(String cardName, String edition) {
+        PaperCard card = getCardByNameAndEditionOrNull(cardName, edition);
+        if (card == null) {
+            return getReplacement(cardName, "Wastes");
+        }
+        return card;
+    }
+
+    /**
+     * Same as {@link #getCardByNameAndEdition(String, String)}, but returns null instead
+     * of the "Wastes" replacement card when the requested printing cannot be resolved
+     * (an unknown name, or a printing the current configuration does not allow).
+     */
+    public static PaperCard getCardByNameAndEditionOrNull(String cardName, String edition) {
         ConfigData configData = Config.instance().getConfigData();
         if (configData.allowedEditions != null && configData.allowedEditions.length > 0) {
             if (!Arrays.asList(configData.allowedEditions).contains(edition)) {
-                return getCardByName(cardName);
+                return getCardByNameOrNull(cardName);
             }
         } else if (configData.restrictedEditions != null && configData.restrictedEditions.length > 0) {
             if (Arrays.asList(configData.restrictedEditions).contains(edition)) {
-                return getCardByName(cardName);
+                return getCardByNameOrNull(cardName);
             }
         }
-        List<PaperCard> cardPool = Config.instance().getSettingData().useAllCardVariants
-                ? FModel.getMagicDb().getCommonCards().getAllCardsNoAlt(cardName)
-                : List.of(FModel.getMagicDb().getCommonCards().getUniqueByNameNoAlt(cardName));
+        List<PaperCard> cardPool;
+        if (Config.instance().getSettingData().useAllCardVariants) {
+            cardPool = FModel.getMagicDb().getCommonCards().getAllCardsNoAlt(cardName);
+        } else {
+            PaperCard unique = FModel.getMagicDb().getCommonCards().getUniqueByNameNoAlt(cardName);
+            cardPool = (unique == null) ? List.of() : List.of(unique);
+        }
+        if (cardPool == null)
+            cardPool = List.of();
         List<PaperCard> validCards = cardPool.stream()
-                .filter(input -> input.getEdition().equals(edition)).collect(Collectors.toList());
+                .filter(input -> input != null && input.getEdition().equals(edition)).collect(Collectors.toList());
 
         if (validCards.isEmpty()) {
-            System.err.println("Unexpected behavior: tried to call getCardByNameAndEdition for card " + cardName
-                    + " from the edition " + edition
-                    + ", but didn't find it in the DB. A random existing instance will be returned if found.");
-            return getCardByName(cardName);
+            System.out.println("[DECK DEBUG] getCardByNameAndEdition: tried to call getCardByNameAndEdition for card "
+                    + cardName + " from the edition " + edition
+                    + ", but didn't find it in the DB. A random allowed instance will be returned if found.");
+            return getCardByNameOrNull(cardName);
         }
 
-        return validCards.get(Current.world().getRandom().nextInt(validCards.size()));
+        return pickRandom(validCards);
     }
 
     public static Collection<PaperCard> getFullCardPool(boolean allCardVariants) {
