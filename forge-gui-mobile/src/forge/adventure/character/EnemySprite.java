@@ -471,6 +471,14 @@ public class EnemySprite extends CharacterSprite implements Steerable<Vector2> {
         return data.bossIntro;
     }
     public Array<Reward> getRewards() {
+        Array<Reward> rewards = collectRewards();
+        // Guaranteed victory bonus: one rare/mythic artifact + one rare/mythic
+        // land, exactly once per won match/duel. Never applied to shops.
+        rewards.addAll(RewardData.generateVictoryBonusRewards(false));
+        return rewards;
+    }
+
+    private Array<Reward> collectRewards() {
         rewardCollectionPool.clear();
         // Collect custom rewards for chaos battles
 
