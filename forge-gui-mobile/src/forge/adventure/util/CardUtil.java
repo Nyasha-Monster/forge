@@ -67,6 +67,7 @@ public class CardUtil {
         private final ColorType colorType;
         private final boolean shouldBeEqual;
         private final List<String> deckNeeds = new ArrayList<>();
+        private final Set<String> excludedNames = new HashSet<>();
         private final String minDate;
         private final static SimpleDateFormat formatter = new SimpleDateFormat("yyyy-MM-dd");
 
@@ -82,6 +83,8 @@ public class CardUtil {
 
         @Override
         public boolean test(final PaperCard card) {
+            if (!this.excludedNames.isEmpty() && this.excludedNames.contains(card.getName()))
+                return !this.shouldBeEqual;
             if (!this.rarities.isEmpty() && !this.rarities.contains(card.getRarity()))
                 return !this.shouldBeEqual;
             if (!this.editions.isEmpty() && !this.editions.contains(card.getEdition())) {
@@ -320,6 +323,12 @@ public class CardUtil {
                 this.minDate = type.minDate;
             } else {
                 this.minDate = "";
+            }
+            if (type.excludeCardNames != null) {
+                for (String name : type.excludeCardNames) {
+                    if (name != null && !name.isEmpty())
+                        this.excludedNames.add(name);
+                }
             }
         }
     }

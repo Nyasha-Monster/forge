@@ -62,6 +62,11 @@ public class RewardData implements Serializable {
     public String sourceDeck;
     public String minDate;
     public boolean ignoreEditionRestrictions;
+    /**
+     * Victory-bonus dedup: card names that must NOT be dealt again (set programmatically
+     * by generateVictoryBonusRewards; never present in JSON configs).
+     */
+    public String[] excludeCardNames;
 
     public RewardData() { }
 
@@ -97,6 +102,7 @@ public class RewardData implements Serializable {
         sourceDeck       = rewardData.sourceDeck;
         minDate          = rewardData.minDate;
         ignoreEditionRestrictions = rewardData.ignoreEditionRestrictions;
+        excludeCardNames  = rewardData.excludeCardNames == null ? null : rewardData.excludeCardNames.clone();
     }
 
     public static final int MIN_CARDS_FOR_NORMAL_POOL = 20;
@@ -114,6 +120,20 @@ public class RewardData implements Serializable {
     private static Iterable<PaperCard> allRelaxedEnemyCards;
     /** [DECK DEBUG] memo: filter signature -> matches in the relaxed pool (cleared with the pools). */
     private static final Map<String, Integer> relaxedMatchCache = new HashMap<>();
+    /**
+     * Names of cards already granted as the guaranteed victory bonus.
+     * Guarantees every won match/duel yields a *new* artifact/land pair even if the
+     * underlying RNG state is restored between matches (save/load), because the draw
+     * is filtered against this history before it happens.
+     */
+    private static final Set<String> victoryBonusGiven = new LinkedHashSet<>();
+    /**
+     * Dedicated RNG for the victory bonus. Deliberately static and NOT the world
+     * Random: java.util.Random inside World gets serialized into the save file by
+     * Gson and can be rolled back on world reload, which repeated the bonus pair
+     * across consecutive victories.
+     */
+    private static final Random victoryBonusRandom = new Random();
 
     public boolean shouldIgnoreEditionRestrictions() {
         if (ignoreEditionRestrictions)
@@ -640,47 +660,78 @@ public class RewardData implements Serializable {
     public static Array<Reward> generateVictoryBonusRewards(boolean isNoSell) {
         Array<Reward> bonus = new Array<>();
         try {
-            Random rnd;
-            try {
-                rnd = WorldSave.getCurrentSave().getWorld().getRandom();
-            } catch (Exception e) {
-                rnd = new Random();
-            }
             if (allCardsNoEditionFilter == null)
                 initializeAllCards();
+            // Safety valve: history may only grow to pool size anyway.
+            if (victoryBonusGiven.size() > 5000)
+                victoryBonusGiven.clear();
+
             RewardData artifactFilter = new RewardData();
             artifactFilter.type = "randomCard";
             artifactFilter.cardTypes = new String[] { "Artifact" };
             artifactFilter.rarity = new String[] { "Rare", "MythicRare" };
             artifactFilter.ignoreEditionRestrictions = true;
-            List<PaperCard> artifactCards = CardUtil.generateCards(allCardsNoEditionFilter, artifactFilter, 1, rnd);
-            if (artifactCards.isEmpty()) {
-                // FALLBACK: relaxed pool probe failed (e.g. pool not ready) —
-                // retry directly via CardUtil relaxed pool.
-                artifactCards = CardUtil.generateCards(CardUtil.getRelaxedPool(), artifactFilter, 1, rnd);
-            }
-            for (PaperCard card : artifactCards) {
-                if (card != null)
-                    bonus.add(new Reward(card, isNoSell));
-            }
+            List<PaperCard> artifactCards = drawVictoryBonusCard(artifactFilter, "artifact");
+
             RewardData landFilter = new RewardData();
             landFilter.type = "randomCard";
             landFilter.cardTypes = new String[] { "Land" };
             landFilter.rarity = new String[] { "Rare", "MythicRare" };
             landFilter.ignoreEditionRestrictions = true;
-            List<PaperCard> landCards = CardUtil.generateCards(allCardsNoEditionFilter, landFilter, 1, rnd);
-            if (landCards.isEmpty()) {
-                landCards = CardUtil.generateCards(CardUtil.getRelaxedPool(), landFilter, 1, rnd);
+            List<PaperCard> landCards = drawVictoryBonusCard(landFilter, "land");
+
+            for (PaperCard card : artifactCards) {
+                if (card != null)
+                    bonus.add(new Reward(card, isNoSell));
             }
             for (PaperCard card : landCards) {
                 if (card != null)
                     bonus.add(new Reward(card, isNoSell));
             }
-            System.out.println("[DECK DEBUG] victory bonus: +" + bonus.size + " (artifact+land Rare/Mythic)");
+            StringBuilder names = new StringBuilder();
+            for (Reward r : bonus) {
+                if (r.getCard() == null)
+                    continue;
+                if (names.length() > 0)
+                    names.append(", ");
+                names.append(r.getCard().getName()).append(" [").append(r.getCard().getEdition()).append("]");
+            }
+            System.out.println("[DECK DEBUG] victory bonus: +" + bonus.size
+                    + " (artifact+land Rare/Mythic; history=" + victoryBonusGiven.size()
+                    + "; " + names + ")");
         } catch (Exception e) {
             System.err.println("[DECK DEBUG] victory bonus failed: " + e.getMessage());
         }
         return bonus;
+    }
+
+    /**
+     * Draws one card for the victory bonus, excluding every name already granted
+     * before (guarantees "a new pair every victory"). When the "not yet given"
+     * part of the pool is exhausted the history is reset and the draw repeats
+     * unrestricted, so the bonus can never come back empty.
+     */
+    private static List<PaperCard> drawVictoryBonusCard(RewardData filter, String label) {
+        filter.excludeCardNames = victoryBonusGiven.isEmpty()
+                ? null : victoryBonusGiven.toArray(new String[0]);
+        List<PaperCard> drawn = CardUtil.generateCards(allCardsNoEditionFilter, filter, 1, victoryBonusRandom);
+        if (drawn.isEmpty() && !victoryBonusGiven.isEmpty()) {
+            System.out.println("[DECK DEBUG] victory bonus: " + label
+                    + " pool exhausted (history=" + victoryBonusGiven.size() + ") -> reset history");
+            victoryBonusGiven.clear();
+            filter.excludeCardNames = null;
+            drawn = CardUtil.generateCards(allCardsNoEditionFilter, filter, 1, victoryBonusRandom);
+        }
+        if (drawn.isEmpty()) {
+            // FALLBACK: relaxed pool probe failed (e.g. pool not ready) —
+            // retry directly via CardUtil relaxed pool.
+            drawn = CardUtil.generateCards(CardUtil.getRelaxedPool(), filter, 1, victoryBonusRandom);
+        }
+        for (PaperCard card : drawn) {
+            if (card != null)
+                victoryBonusGiven.add(card.getName());
+        }
+        return drawn;
     }
 
     /** Shop lands: only Uncommon/Rare/Mythic, never Common/BasicLand. */
