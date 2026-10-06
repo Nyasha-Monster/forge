@@ -53,4 +53,17 @@ The second array I'm going to add is the `"allowedJumpstart"` array. This change
 
 You might have noticed that unlike the previous arrays, this one uses the set name, not code. This is a current limitation in Forge, and one we will have to live with. Luckily, there are far fewer jumpstart sets than than other sets. (**NOTE: Adding a set to this list that does not have any official Jumpstart packs will NOT enable them for jumpstart events.** Some of you who have tooled around will have noticed there are Jumpstarts in "Innistrad" that don't exist in normal jumpstarts. Well, that is for a much later tutorial. My apologies.)
 
+One more pair of event-related settings deserves a mention: `allowedEvents`. Where `allowedEditions` controls which sets can spawn as cards (in rewards, shops and your collection), `allowedEvents` whitelists which sets the Inn may use for its draft and sealed events. When both arrays are present they are **combined** — a set qualifies for an event if its code appears in `allowedEvents` **or** in `allowedEditions`, and entries listed in `allowedEvents` override `restrictedEvents`. For example:
+
+```
+"allowedEditions": [
+    "TMT", "TMC", "PZA"
+  ],
+  "allowedEvents": [
+    "TMT", "TMC", "30A", "ULG"
+  ],
+```
+
+With these arrays the Inn's drafts and sealed events draw from TMT, TMC, PZA, 30A and ULG together. Two limitations to keep in mind. First, a set can only get an event if it has its own booster template: bonus-sheet sets that merely appear inside another set's boosters (like "PZA" inside TMT packs) are skipped for events — whenever an event spawns, the `[EVENT DEBUG]` line in the log shows exactly which whitelisted sets were not offered. Second, a whitelisted set whose block siblings are not whitelisted (like "ULG", which normally belongs to the three-set Urza block) is not forgotten: Forge offers it as a single-set event whose block is displayed like `Urza's Legacy [ULG]`.
+
 As a final note, while this changes the rewards from enemies and shops, as well as what can appear in the Inns. It has no bearing on your starting decks, or enemy decks, just the rewards and shop options. So yes, if you followed along so far, you will playing with 'normal' cards, against normal cards, to earn Silver-Bordered cards.. yeah, it's a bit crazy, but that works... For those who want to customize their plane even further, the next tutorial will focus on modifying both starting decks, and enemy decks. See you there. For now, enjoy, and again. if you have any problems, please reach out me "Shenshinoman" on the discord and I will be happy to help.

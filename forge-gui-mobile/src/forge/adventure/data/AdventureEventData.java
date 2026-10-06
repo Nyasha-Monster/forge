@@ -148,6 +148,11 @@ public class AdventureEventData implements Serializable {
     public CardBlock getCardBlock() {
         if (cardBlock == null) {
             cardBlock = AdventureOverrides.instance().getBlock(cardBlockName);
+            if (cardBlock == null) {
+                //Single-set event blocks are generated rather than stored in blocks.txt;
+                //rebuild one from the set code embedded in its name so saved events keep working.
+                cardBlock = resolveSingletonBlock(cardBlockName);
+            }
         }
         return cardBlock;
     }
@@ -204,31 +209,52 @@ public class AdventureEventData implements Serializable {
     }
 
     private static final Set<String> POWER_NINE = Set.of("Black Lotus", "Mox Emerald", "Mox Pearl", "Mox Ruby", "Mox Sapphire", "Mox Jet", "Ancestral Recall", "Timetwister", "Time Walk");
+    private static final int SINGLETON_DRAFT_BOOSTERS = 3;
+    private static final int SINGLETON_SEALED_BOOSTERS = 6;
+
+    /** Converts a config string array to a set; a HashSet tolerates duplicate entries that users edit in by hand. */
+    private static Set<String> toStringSet(String[] values) {
+        if (values == null || values.length == 0)
+            return Collections.emptySet();
+        return new HashSet<>(Arrays.asList(values));
+    }
 
     private static CardBlock pickWeightedCardBlock() {
         CardEdition.Collection editions = FModel.getMagicDb().getEditions();
         ConfigData configData = Config.instance().getConfigData();
         Predicate<CardEdition> filter = CardEdition.Predicates.CAN_MAKE_BOOSTER;
 
-        if(configData.allowedEvents != null && configData.allowedEvents.length > 0) {
-            Set<String> allowedEvents = Set.of(configData.allowedEvents);
-            filter = filter.and(q -> allowedEvents.contains(q.getCode()));
+        //Both world whitelists feed the event list: a set qualifies for draft/sealed
+        //events when it is listed in allowedEvents OR allowedEditions.
+        Set<String> eventAllowed = toStringSet(configData.allowedEvents);
+        Set<String> editionAllowed = toStringSet(configData.allowedEditions);
+        Set<String> eventRestricted = toStringSet(configData.restrictedEvents);
+        Set<String> allowed = new LinkedHashSet<>(eventAllowed);
+        allowed.addAll(editionAllowed);
+
+        if (!allowed.isEmpty()) {
+            //The whitelists beat the blacklists and the random set-pool roll below,
+            //except that sets added only through allowedEditions still respect restrictedEvents.
+            filter = filter.and(q -> allowed.contains(q.getCode())
+                    && (eventAllowed.contains(q.getCode()) || !eventRestricted.contains(q.getCode())));
+
+            if (eventAllowed.isEmpty()) {
+                //No explicit event list: keep the random set-pool narrowing that
+                //allowedEditions-only planes had before, exactly as it was.
+                Predicate<CardEdition> setPoolFilter = selectSetPool();
+                if (editions.stream().anyMatch(setPoolFilter))
+                    filter = filter.and(setPoolFilter);
+            }
         }
         else
         {
-            //The whitelist beats all other filters.
             if(configData.restrictedEvents != null) {
                 //Temporary restriction until rewards are more diverse - don't want to award restricted cards so these editions need different rewards added.
                 //Also includes sets that use conspiracy or commander drafts.
-                Set<String> restrictedEvents = Set.of(configData.restrictedEvents);
-                filter = filter.and((q) -> !restrictedEvents.contains(q.getCode()));
+                filter = filter.and((q) -> !eventRestricted.contains(q.getCode()));
             }
-            if (configData.allowedEditions != null && configData.allowedEditions.length > 0) {
-                Set<String> allowed = Set.of(configData.allowedEditions);
-                filter = filter.and(q -> allowed.contains(q.getCode()));
-            } else if(configData.restrictedEditions != null) {
-                List<String> restrictedList = Arrays.asList(configData.restrictedEditions);
-                Set<String> restricted = new HashSet<>(restrictedList); //Would use Set.of but that throws an error if there's any duplicates, and users edit these lists all the time.
+            if (configData.restrictedEditions != null) {
+                Set<String> restricted = toStringSet(configData.restrictedEditions);
                 filter = filter.and(q -> !restricted.contains(q.getCode()));
             }
 
@@ -244,6 +270,25 @@ public class AdventureEventData implements Serializable {
                 .forEach(allEditions::add);
 
         List<CardBlock> legalBlocks = getValidDraftBlocks(allEditions);
+
+        if (!allowed.isEmpty()) {
+            //Whitelisted sets that no legal block fully covers still get a single-set event.
+            appendSingletonBlocks(legalBlocks, allEditions, configData);
+
+            Set<String> offered = new HashSet<>();
+            for (CardEdition set : allEditions) {
+                offered.add(set.getCode());
+            }
+            Set<String> notOffered = new LinkedHashSet<>(allowed);
+            notOffered.removeAll(offered);
+            List<String> blockNames = new ArrayList<>();
+            for (CardBlock block : legalBlocks) {
+                blockNames.add(block.getName());
+            }
+            System.out.println("[EVENT DEBUG] event whitelist=" + allowed
+                    + " notOffered(no booster template or filtered out)=" + notOffered
+                    + " event blocks=" + blockNames);
+        }
 
         return legalBlocks.isEmpty() ? null : Aggregates.random(legalBlocks);
     }
@@ -264,17 +309,87 @@ public class AdventureEventData implements Serializable {
         for (CardEdition c : b.getSets()) {
             if (!validEditions.contains(c))
                 return false;
-            if (!c.hasBoosterTemplate())
+            if (!isValidDraftSet(c))
                 return false;
-            if(c.getBoosterTemplate().getNumberOfCardsExpected() <= 7)
-                return false;
-            for (PrintSheet ps : c.getPrintSheetsBySection()) {
-                //exclude block with sets containing P9 cards.
-                if(!Collections.disjoint(ps.toNameLookup().keySet(), POWER_NINE))
-                    return false;
-            }
         }
         return true;
+    }
+
+    /** Per-set draft/sealed viability: usable booster template, a real pool of cards, no P9 print sheets. */
+    public static boolean isValidDraftSet(CardEdition c) {
+        if (!c.hasBoosterTemplate())
+            return false;
+        if(c.getBoosterTemplate().getNumberOfCardsExpected() <= 7)
+            return false;
+        for (PrintSheet ps : c.getPrintSheetsBySection()) {
+            //exclude sets containing P9 cards.
+            if(!Collections.disjoint(ps.toNameLookup().keySet(), POWER_NINE))
+                return false;
+        }
+        return true;
+    }
+
+    /**
+     * Name of a generated single-set event block. The set code is embedded in the
+     * name so the block can be rebuilt from a save file, where only the name survives
+     * (the cardBlock field itself is transient).
+     */
+    public static String singletonBlockName(CardEdition set) {
+        return set.getName() + " [" + set.getCode() + "]";
+    }
+
+    /** Builds a single-set draft/sealed block (3 draft / 6 sealed boosters, matching the blocks.txt defaults). */
+    public static CardBlock singletonBlockFor(CardEdition set) {
+        return new CardBlock(0, singletonBlockName(set), Collections.singletonList(set),
+                Collections.emptyList(), set, SINGLETON_DRAFT_BOOSTERS, SINGLETON_SEALED_BOOSTERS);
+    }
+
+    /** Rebuilds a generated single-set block from its name, or returns null if the name isn't one. */
+    private static CardBlock resolveSingletonBlock(String blockName) {
+        if (blockName == null || !blockName.endsWith("]"))
+            return null;
+        int open = blockName.lastIndexOf('[');
+        if (open <= 0)
+            return null;
+        CardEdition set = FModel.getMagicDb().getEditions().get(blockName.substring(open + 1, blockName.length() - 1));
+        return set == null ? null : singletonBlockFor(set);
+    }
+
+    /**
+     * Expands a whitelist-filtered draft block list with single-set events for eligible
+     * sets that no legal block fully covers: a whitelisted set whose block siblings were
+     * not whitelisted (e.g. ULG when USG/UDS are absent from the lists), or a set that
+     * isn't part of any block at all.
+     */
+    private static void appendSingletonBlocks(List<CardBlock> legalBlocks, List<CardEdition> allEditions, ConfigData configData) {
+        Set<String> covered = new HashSet<>();
+        for (CardBlock block : legalBlocks) {
+            for (CardEdition set : block.getSets()) {
+                covered.add(set.getCode());
+            }
+        }
+
+        //Sets of a plane-restricted upstream block don't get a private single-set event either;
+        //restrictedBlocks has always beaten the event whitelists because allBlocks() hides them.
+        Set<String> restrictedBlockNames = toStringSet(configData.restrictedBlocks);
+        Set<String> inRestrictedBlock = new HashSet<>();
+        if (!restrictedBlockNames.isEmpty()) {
+            for (CardBlock block : FModel.getBlocks()) {
+                if (restrictedBlockNames.contains(block.getName())) {
+                    for (CardEdition set : block.getSets()) {
+                        inRestrictedBlock.add(set.getCode());
+                    }
+                }
+            }
+        }
+
+        for (CardEdition set : allEditions) {
+            if (covered.contains(set.getCode()) || inRestrictedBlock.contains(set.getCode()))
+                continue;
+            if (!isValidDraftSet(set))
+                continue;
+            legalBlocks.add(singletonBlockFor(set));
+        }
     }
 
     private static CardBlock pickJumpstartCardBlock() {
