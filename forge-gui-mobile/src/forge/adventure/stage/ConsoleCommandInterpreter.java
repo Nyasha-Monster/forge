@@ -553,6 +553,8 @@ public class ConsoleCommandInterpreter {
                 if(edition == null)
                     return "Unable to find edition or block: " + blockName;
                 eventCardBlock = Aggregates.random(AdventureEventData.getValidDraftBlocks(List.of(edition)));
+                if(eventCardBlock == null && AdventureEventData.isValidDraftSet(edition))
+                    eventCardBlock = AdventureEventData.singletonBlockFor(edition); //Falls back to a generated single-set event when no full block is legal for this set.
                 if(eventCardBlock == null)
                     return "Unable to find a valid event block that exclusively contains edition " + edition.getName();
             }
