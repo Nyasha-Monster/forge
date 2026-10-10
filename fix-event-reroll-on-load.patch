@@ -1,0 +1,78 @@
+diff --git a/forge-gui-mobile/src/forge/adventure/data/AdventureEventData.java b/forge-gui-mobile/src/forge/adventure/data/AdventureEventData.java
+index f2f1353cace..5dfa69cdb20 100644
+--- a/forge-gui-mobile/src/forge/adventure/data/AdventureEventData.java
++++ b/forge-gui-mobile/src/forge/adventure/data/AdventureEventData.java
+@@ -32,6 +32,8 @@ import forge.util.Localizer;
+ import forge.util.MyRandom;
+ import forge.util.StreamUtil;
+ 
++import java.io.IOException;
++import java.io.ObjectInputStream;
+ import java.io.Serial;
+ import java.io.Serializable;
+ import java.util.*;
+@@ -145,6 +147,64 @@ public class AdventureEventData implements Serializable {
+         getEventRandom().setSeed(seed);
+     }
+ 
++    /**
++     * Rerolls the booster pool every time a save is loaded for events that have been
++     * entered but whose matches have not started yet. This gives the player a fresh set
++     * of boosters after reloading — if they dislike the pool they can simply save &amp;
++     * reload to get new cards. In-progress (Started+) and not-yet-entered (Available)
++     * events are left untouched.
++     */
++    @Serial
++    private void readObject(ObjectInputStream in) throws IOException, ClassNotFoundException {
++        in.defaultReadObject();
++        try {
++            // Rebuild the transient card block from its name (transient field isn't serialized).
++            if (cardBlock == null && cardBlockName != null) {
++                getCardBlock();
++            }
++            // Only reroll pools for events whose matches have not started yet.
++            if (cardBlock == null
++                    || format == AdventureEventController.EventFormat.Constructed
++                    || (eventStatus != AdventureEventController.EventStatus.Entered
++                        && eventStatus != AdventureEventController.EventStatus.Ready)) {
++                return;
++            }
++            // Draft: only reroll an in-progress draft (Entered). A finished draft (Ready)
++            // keeps its locked-in deck — rerolling there would wipe the player's picks.
++            if (format == AdventureEventController.EventFormat.Draft
++                    && eventStatus != AdventureEventController.EventStatus.Entered) {
++                return;
++            }
++
++            // New seed -> new boosters. Set both the persisted field and the transient RNG
++            // so the fresh seed survives the next save too.
++            eventSeed = MyRandom.getRandom().nextLong();
++            random = new Random(eventSeed);
++
++            switch (format) {
++                case Sealed:
++                    // A fresh empty deck makes generateSealedPool() rebuild on next "Create Deck".
++                    registeredDeck = new Deck();
++                    jumpstartBoosters.clear();
++                    eventStatus = AdventureEventController.EventStatus.Entered;
++                    break;
++                case Jumpstart:
++                    // Re-roll the offered packs so a new selection shows on next entry.
++                    registeredDeck = new Deck();
++                    jumpstartBoosters = AdventureEventController.instance()
++                            .getJumpstartBoosters(getCardBlock(), JUMPSTART_TO_PICK_FROM);
++                    eventStatus = AdventureEventController.EventStatus.Entered;
++                    break;
++                default:
++                    return;
++            }
++            System.out.println("[Event] Rerolled pool on load for \"" + description + "\" (" + format + ")");
++        } catch (Exception e) {
++            // Never let a pool reroll break save loading.
++            System.err.println("[Event] Pool reroll on load failed for \"" + description + "\": " + e.getMessage());
++        }
++    }
++
+     public CardBlock getCardBlock() {
+         if (cardBlock == null) {
+             cardBlock = AdventureOverrides.instance().getBlock(cardBlockName);
