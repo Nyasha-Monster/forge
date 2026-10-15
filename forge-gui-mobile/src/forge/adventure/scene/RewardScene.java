@@ -1,6 +1,7 @@
 package forge.adventure.scene;
 
 import com.badlogic.gdx.Gdx;
+import com.badlogic.gdx.Input;
 import com.badlogic.gdx.controllers.Controller;
 import com.badlogic.gdx.controllers.Controllers;
 import com.badlogic.gdx.graphics.g2d.TextureRegion;
@@ -29,6 +30,7 @@ import forge.adventure.world.WorldSave;
 import forge.assets.ImageCache;
 import forge.deck.Deck;
 import forge.item.PaperCard;
+import forge.model.FModel;
 import forge.sound.SoundEffectType;
 import forge.sound.SoundSystem;
 import forge.util.ItemPool;
@@ -77,6 +79,9 @@ public class RewardScene extends UIScene {
     public Image marketBackgroundImg = null;
     private Actor cachedCardsContainerActor = null;
     private Drawable origDrawable = null;
+    // Booster re-deal via Z key: source deck opened from inventory, re-generated as new.
+    private Deck boosterSource = null;
+    private boolean boosterNoSell = false;
 
     private RewardScene() {
         super(Forge.isLandscapeMode() ? "ui/items.json" : "ui/items_portrait.json");
@@ -96,6 +101,88 @@ public class RewardScene extends UIScene {
         doneButton = ui.findActor("done");
         restockButton = ui.findActor("restock");
         origDrawable = getBGDrawable();
+    }
+
+    @Override
+    public boolean keyPressed(int keycode) {
+        if (keycode == Input.Keys.Z && canRerollBooster()) {
+            rerollBooster();
+            return true;
+        }
+        return super.keyPressed(keycode);
+    }
+
+    private boolean canRerollBooster() {
+        return boosterSource != null && type == Type.EventReward;
+    }
+
+    /** Re-deal current booster: generate new cards of the same set/color, auto-flip immediately. */
+    public void rerollBooster() {
+        if (!canRerollBooster())
+            return;
+        try {
+            String key = boosterSource.getComment();
+            if (key == null || key.isEmpty())
+                key = boosterSource.getName();
+            Deck fresh;
+            // Color boosters store color name in comment, set boosters store set code.
+            if (key != null && key.endsWith("Booster Pack"))
+                fresh = AdventureEventController.instance().generateBoosterByColor(key.replace(" Booster Pack", ""));
+            else if (key != null && FModel.getMagicDb().getEditions().get(key) != null)
+                fresh = AdventureEventController.instance().generateBooster(key);
+            else
+                fresh = CardUtil.generateBoosterPackAsDeck(key);
+            if (fresh == null || fresh.isEmpty())
+                return;
+            boosterSource = fresh;
+            HapticEngine.vibrate(FPref.UI_VIBRATE_ON_ADVENTURE_REWARD, 5);
+            SoundSystem.instance.play(SoundEffectType.Shuffle, false);
+            // Discard shown cards without granting them, then deal fresh like a new booster.
+            for (int i = 0; i < generated.size; i++) {
+                Actor actor = generated.get(i);
+                if (actor instanceof RewardActor rewardActor) {
+                    rewardActor.clearLabel();
+                    try {
+                        stage.getActors().removeValue(rewardActor, true);
+                    } catch (Exception ex) {
+                    }
+                } else {
+                    actor.remove();
+                }
+            }
+            generated.clear();
+            clearSelectable();
+            // Reset auto-flip state so fresh cards flip like a newly opened booster.
+            shown = false;
+            loadRewards(fresh, type, null, boosterNoSell);
+            // loadRewards(Deck) overwrote boosterSource with `fresh` — keep it for next rerolls.
+            boosterSource = fresh;
+            autoFlipNewBooster();
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
+    }
+
+    private void autoFlipNewBooster() {
+        // Same cascade as a freshly opened booster, but without the initial 1s wait.
+        shown = true;
+        float delay = 0f;
+        generated.shuffle();
+        for (Actor actor : new Array.ArrayIterator<>(generated)) {
+            if (!(actor instanceof RewardActor rewardActor)) {
+                continue;
+            }
+            final RewardActor target = rewardActor;
+            final float d = delay;
+            Timer.schedule(new Timer.Task() {
+                @Override
+                public void run() {
+                    // flip() ignores already-flipped cards, safe to call unconditionally.
+                    target.flip();
+                }
+            }, d);
+            delay += 0.12f;
+        }
     }
 
     @Override
@@ -323,6 +410,9 @@ public class RewardScene extends UIScene {
         for (PaperCard card : deck.getAllCardsInASinglePool(true, true).toFlatList()) {
             rewards.add(new Reward(card, noSell));
         }
+        // Remember booster opened from inventory so Z can re-deal the same set as new.
+        boosterSource = type == Type.EventReward && deck != null && !deck.isEmpty() ? deck : null;
+        boosterNoSell = noSell;
         loadRewards(rewards, type, shopActor);
     }
 
@@ -471,6 +561,7 @@ public class RewardScene extends UIScene {
                     restockButton.setVisible(false);
                     restockButton.setDisabled(true);
                 }
+                headerLabel.setVisible(false);
                 break;
             case QuestReward:
             case EventReward:
