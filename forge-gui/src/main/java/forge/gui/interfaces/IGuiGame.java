@@ -182,6 +182,15 @@ public interface IGuiGame {
     }
     boolean confirm(CardView c, String question, boolean defaultIsYes, List<String> options);
 
+    default boolean confirm(final CardView c, final CardView secondCard, final String question) {
+        return confirm(c, secondCard, question, true, InputConfirm.defaultOptions);
+    }
+    default boolean confirm(final CardView c, final CardView secondCard, final String question,
+            final boolean defaultIsYes, final List<String> options) {
+        // GUIs that don't support a second preview card fall back to single-card confirm
+        return confirm(c, question, defaultIsYes, options);
+    }
+
     // returned Object will never be null
     default <T> List<T> getChoices(final String message, final int min, final int max, final List<T> choices) {
         return getChoices(message, min, max, choices, null, null);

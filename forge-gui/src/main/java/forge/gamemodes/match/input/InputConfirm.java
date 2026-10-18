@@ -75,7 +75,9 @@ public class InputConfirm extends InputSyncronizedBase {
                      dialogCard = CardView.get(sa.getHostCard());
                  }
              }
-             return controller.getGui().confirm(dialogCard, message, defaultIsYes, options);
+             // Second preview card from the ability (e.g. Black Widow's exiled card)
+             final CardView secondCard = sa != null ? sa.getSecondPreviewCard() : null;
+             return controller.getGui().confirm(dialogCard, secondCard, message, defaultIsYes, options);
          }
          InputConfirm inp;
          if (options.size() == 2) {

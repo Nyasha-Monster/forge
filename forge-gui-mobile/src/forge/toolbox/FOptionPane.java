@@ -89,38 +89,88 @@ public class FOptionPane extends FDialog {
     }
 
     public static int showCardOptionDialog(final CardView card, final String message, final String title, final FSkinProp icon, final List<String> options, final int defaultOption) {
+        return showCardsOptionDialog(card, null, message, title, icon, options, defaultOption);
+    }
+    public static int showCardsOptionDialog(final CardView card, final CardView secondCard, final String message, final String title, final FSkinProp icon, final List<String> options, final int defaultOption) {
         return new WaitCallback<Integer>() {
             @Override
             public void run() {
-                FOptionPane.showCardOptionDialog(card, message, title, icon == null ? null : FSkin.getImages().get(icon), options, defaultOption, this);
+                FOptionPane.showCardsOptionDialog(card, secondCard, message, title, icon == null ? null : FSkin.getImages().get(icon), options, defaultOption, this);
             }
         }.invokeAndWait();
     }
     public static void showCardOptionDialog(final CardView card, String message, String title, FImage icon, final List<String> options, final int defaultOption, final Consumer<Integer> callback) {
+        showCardsOptionDialog(card, null, message, title, icon, options, defaultOption, callback);
+    }
+    public static void showCardsOptionDialog(final CardView card, final CardView secondCard, String message, String title, FImage icon, final List<String> options, final int defaultOption, final Consumer<Integer> callback) {
         final FDisplayObject cardDisplay;
         if (card != null) {
             cardDisplay = new FDisplayObject() {
+                private static final float GAP = Utils.scale(12);
+
+                private float[] layout(final float totalWidth, final float totalHeight) {
+                    // Single card: same scale as before (height-driven), centered.
+                    // Two cards: identical scale for both, pair centered with a small gap.
+                    if (secondCard == null) {
+                        final float h = totalHeight;
+                        final float w = h / FCardPanel.ASPECT_RATIO;
+                        final float x = (totalWidth - w) / 2;
+                        return new float[] { h, w, x, 0f, 0f, 0f };
+                    }
+                    float h = totalHeight;
+                    float w = h / FCardPanel.ASPECT_RATIO;
+                    float pairWidth = 2 * w + GAP;
+                    if (pairWidth > totalWidth) {
+                        w = (totalWidth - GAP) / 2;
+                        h = w * FCardPanel.ASPECT_RATIO;
+                        pairWidth = 2 * w + GAP;
+                    }
+                    final float leftX = (totalWidth - pairWidth) / 2;
+                    final float rightX = leftX + w + GAP;
+                    final float y = (totalHeight - h) / 2;
+                    return new float[] { h, w, leftX, y, rightX, y };
+                }
+
+                private CardView pickCard(final float x, final float y) {
+                    final float[] l = layout(getWidth(), getHeight());
+                    if (secondCard == null) {
+                        return card;
+                    }
+                    final float w = l[1];
+                    final float leftX = l[2];
+                    // tap left half (Vat) -> first card, right half (creature) -> second card
+                    return x < leftX + w + GAP / 2 ? card : secondCard;
+                }
                 @Override
                 public boolean tap(final float x, final float y, final int count) {
-                    CardZoom.show(card);
+                    CardZoom.show(pickCard(x, y));
                     return true;
                 }
                 @Override
                 public boolean longPress(final float x, final float y) {
-                    CardZoom.show(card);
+                    CardZoom.show(pickCard(x, y));
                     return true;
                 }
                 @Override
                 public void draw(final Graphics g) {
-                    final float h = getHeight();
-                    final float w = h / FCardPanel.ASPECT_RATIO;
-                    final float x = (getWidth() - w) / 2;
-                    final float y = 0;
-
-                    CardRenderer.drawCard(g, card, x, y, w, h, CardStackPosition.Top);
+                    final float[] l = layout(getWidth(), getHeight());
+                    final float h = l[0];
+                    final float w = l[1];
+                    if (secondCard == null) {
+                        CardRenderer.drawCard(g, card, l[2], 0, w, h, CardStackPosition.Top);
+                    } else {
+                        // Mimic Vat slightly left of center, exiled creature slightly right — same scale
+                        CardRenderer.drawCard(g, card, l[2], l[3], w, h, CardStackPosition.Top);
+                        CardRenderer.drawCard(g, secondCard, l[4], l[5], w, h, CardStackPosition.Top);
+                    }
                 }
             };
             cardDisplay.setHeight(Forge.getScreenHeight() / 2);
+        }
+        else if (secondCard != null) {
+            // only second card (shouldn't normally happen) — show it alone
+            showCardOptionDialog(secondCard, message, title, icon, options, defaultOption, callback);
+            return;
         }
         else {
             cardDisplay = null;

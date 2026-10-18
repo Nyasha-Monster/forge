@@ -1,4 +1,4 @@
-package forge.screens.match;
+  package forge.screens.match;
 
 import java.util.ArrayList;
 import java.util.Collection;
@@ -283,6 +283,7 @@ public class MatchController extends NetworkGuiGame {
         btn1.setEnabled(enable1);
         btn2.setEnabled(enable2);
     }
+
 
     public static void setIntroShowing(final boolean showing) {
         introShowing = showing;
@@ -757,6 +758,12 @@ public class MatchController extends NetworkGuiGame {
     @Override
     public boolean confirm(final CardView c, final String question, final boolean defaultIsYes, final List<String> options) {
         return FOptionPane.showCardOptionDialog(c, question, "", SOptionPane.INFORMATION_ICON, options, defaultIsYes ? 0 : 1) == 0;
+    }
+
+    public boolean confirm(final CardView c, final CardView secondCard, final String question,
+            final boolean defaultIsYes, final List<String> options) {
+        return FOptionPane.showCardsOptionDialog(c, secondCard, question, "", SOptionPane.INFORMATION_ICON,
+                options, defaultIsYes ? 0 : 1) == 0;
     }
 
     @Override

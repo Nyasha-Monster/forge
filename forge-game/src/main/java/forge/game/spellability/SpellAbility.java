@@ -1349,6 +1349,24 @@ public abstract class SpellAbility extends CardTraitBase implements ISpellAbilit
         }
         return triggerObj;
     }
+
+    /**
+     * Returns an optional second card to preview alongside the host card in confirm dialogs
+     * (mobile two-card display). Checks for the {@code SecondPreviewCard} ability parameter;
+     * if {@code true}, returns the first imprinted card on the host card (e.g. a card exiled
+     * by Black Widow, Super Spy). Default implementation returns null — single card preview.
+     * Subclasses can override to provide custom second-card logic.
+     * @return second CardView to show, or null for single-card preview
+     */
+    public CardView getSecondPreviewCard() {
+        if ("true".equalsIgnoreCase(getParamOrDefault("SecondPreviewCard", "false"))) {
+            final Card host = getHostCard();
+            if (host != null && !host.getImprintedCards().isEmpty()) {
+                return CardView.get(host.getImprintedCards().iterator().next());
+            }
+        }
+        return null;
+    }
     public void setTrigger(final Trigger t) {
         triggerObj = t;
     }

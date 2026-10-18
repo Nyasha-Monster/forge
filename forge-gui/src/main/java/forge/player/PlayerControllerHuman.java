@@ -830,7 +830,23 @@ public class PlayerControllerHuman extends PlayerController implements IGameCont
                 cardView = spellAbilityView.getHostCard();
             else
                 cardView = wrapper.getCardView();
-            final boolean result = this.getGui().confirm(cardView, buildQuestion.toString().replaceAll("\n", " "));
+            // Second preview card: e.g. for Mimic Vat show the dying creature next to the Vat.
+            // A fresh CardView is resolved per trigger, so repeated triggers in one turn always
+            // refresh the image (dialog is rebuilt for every confirm).
+            CardView secondCardView = null;
+            if (tos.containsKey(AbilityKey.Card) && tos.get(AbilityKey.Card) instanceof Card) {
+                final Card triggerCard = (Card) tos.get(AbilityKey.Card);
+                final CardView triggerView = CardView.get(triggerCard);
+                if (triggerView != null && triggerView != cardView) {
+                    secondCardView = triggerView;
+                }
+            }
+            // Fallback: ability-specific second preview card (custom cards flagged via getSecondPreviewCard())
+            if (secondCardView == null) {
+                secondCardView = sa.getSecondPreviewCard();
+            }
+            final boolean result = this.getGui().confirm(cardView, secondCardView,
+                    buildQuestion.toString().replaceAll("\n", " "));
             recordConfirm(cardView, result);
             return result;
         }
