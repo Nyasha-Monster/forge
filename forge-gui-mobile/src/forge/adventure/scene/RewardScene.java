@@ -177,8 +177,8 @@ public class RewardScene extends UIScene {
             Timer.schedule(new Timer.Task() {
                 @Override
                 public void run() {
-                    // flip() ignores already-flipped cards, safe to call unconditionally.
-                    target.flip();
+                    // flipSilent() ignores already-flipped cards, safe to call unconditionally.
+                    target.flipSilent();
                 }
             }, d);
             delay += 0.12f;

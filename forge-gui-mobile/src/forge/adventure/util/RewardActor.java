@@ -1049,6 +1049,35 @@ public class RewardActor extends Actor implements Disposable, ImageFetcher.Callb
         }
     }
 
+    public void flipSilent() {
+        if (clicked)
+            return;
+        clicked = true;
+        flipProcess = 0;
+        if (canAutoSell && autoSell != null) {
+            autoSell.setPosition(this.getX(), this.getY());
+            getStage().addActor(autoSell);
+            autoSell.setVisible(false);
+        }
+
+        if (reward.type.equals(Reward.Type.Card) && ownedLabel != null) {
+            if (isNew) {
+                if (canAutoSell && autoSell != null) {
+                    ownedLabel.setPosition(
+                            autoSell.getX() + autoSell.getWidth() / 2 - ownedLabel.layout.getWidth() / 2,
+                            autoSell.getY() + autoSell.getHeight());
+                } else {
+                    ownedLabel.setPosition(this.getX(), this.getY() + 5);
+                }
+            } else {
+                ownedLabel.setPosition(this.getX(), this.getY() - ownedLabel.layout.getHeight() / 2);
+            }
+
+            ownedLabel.setVisible(false);
+            getStage().addActor(ownedLabel);
+        }
+    }
+
     public void sold() {
         // TODO add new card to be sold???
         if (sold)
