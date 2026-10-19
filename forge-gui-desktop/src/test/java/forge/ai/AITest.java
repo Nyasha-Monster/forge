@@ -42,6 +42,10 @@ public class AITest {
         FModel.initialize(null, preferences -> {
             preferences.setPref(FPref.LOAD_CARD_SCRIPTS_LAZILY, false);
             preferences.setPref(FPref.UI_LANGUAGE, "en-US");
+            // Funny cards (e.g. "Manakin and Millikin" from Unknown Event) must be
+            // loadable in tests regardless of the developer's local forge.preferences,
+            // where UI_LOAD_NONLEGAL_CARDS may be false.
+            preferences.setPref(FPref.UI_LOAD_NONLEGAL_CARDS, "true");
             return null;
         });
         initialized = true;
